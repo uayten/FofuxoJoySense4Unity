@@ -1,6 +1,6 @@
 # Decisões
 
-<!-- project-docs: só o que vale agora. Próximo ID: D-011 · Próximo fato: F-015 -->
+<!-- project-docs: só o que vale agora. Próximo ID: D-014 · Próximo fato: F-015 -->
 
 ## Decisões
 
@@ -57,9 +57,24 @@ Por quê: o relatório continua sendo o estado, sem reescrever eventos (F-004), 
 Origem: sugestão da IA aceita (gyro aprovado em 2026-11-01, por USB e Bluetooth)
 
 ### D-010 Dead zone por função, e o gyro como controle que o jogo liga a uma action
-Decisão: `JoySenseStickDeadzoneProcessor` e `JoySenseGyroDeadzoneProcessor` são a dead zone de cada binding, com valores literais. `JoySenseSupport.RemoveGlobalStickDeadzone()` zera o filtro global pelas configurações do Input System; é uma escolha do jogo, porque vale para todos os gamepads. `gyroLook` é um controle com os graus girados na input update atual, cujo valor fica no controle e não no estado, e sua posição sobre os bytes do gyro é o que avisa as actions a cada relatório. `ConsumeRotation` continua para quem prefere a API, e descarta o giro depois de 0,25 s sem chamadas.
+Decisão: a dead zone de cada binding de stick é o Stick Deadzone do Input System, com `min` e `max` explícitos; o pacote não tem processor próprio, porque um processor do pacote num binding `<Gamepad>` faria esse binding, que vale para qualquer controle, dar erro e parar de funcionar quando o pacote fosse removido (o Input System descarta o binding cujo processor não acha). Todo controle com movimento dá ao `gyroLook` a usage `GyroLook`, e o binding é `*/{GyroLook}`, sem nomear modelo. `JoySenseSupport.RemoveGlobalStickDeadzone()` zera o filtro global pelas configurações do Input System; é uma escolha do jogo, porque vale para todos os gamepads. `gyroLook` é um controle com os graus girados na input update atual, cujo valor fica no controle e não no estado, e sua posição sobre os bytes do gyro é o que avisa as actions a cada relatório. O gyro só é lido por actions, sem dead zone: o `ConsumeRotation` e o `gyroDeadZone` do dispositivo saíram.
 Por quê: o usuário quer a configuração por função na janela de Input Actions, como no Enhanced Input da Unreal, sem o jogo guardar lógica de gyro. Zerar pelas configurações em vez de um override de layout evita recriar os dispositivos, o que perderia a ligação com o Bluetooth e a calibração. O gyro não pode ser um delta como o do mouse, que depende de callback de estado (F-004).
-Origem: usuário (a meta) e sugestão da IA aceita (o desenho); a action em Play ainda a validar (R-011)
+Origem: usuário (a meta) e sugestão da IA aceita (o desenho); validado em Play, pelo cabo e pelo Bluetooth (R-011)
+Não escolhido: o processor `JoySenseStickDeadzone`, que existiu até o pacote poder ser removido sem quebrar os bindings genéricos; a única diferença para o do Input System era `min=0` valer 0 em vez de "o valor global", o que dá no mesmo com a global zerada. Também não escolhido: uma dead zone para o gyro. Houve um processor `JoySenseGyroDeadzone` em forma de portão (nada passava com o controle parado na mão; um giro de mais de 10° em 0,25 s liberava tudo por 3 s, e outro giro desses renovava), no commit 1c95c64 do MyDragonShop. Saiu sem ser testado no hardware: depois do D-012 o usuário achou o gyro bom sem dead zone pelo cabo e pelo Bluetooth, os jogos de gyro bem feitos oferecem sensibilidade e não dead zone, e para o tremor a indicação do GyroWiki é a suavização em camadas, não dead zone.
+
+### D-012 O `gyroLook` gira pelo tempo, não pela chegada dos relatórios
+Decisão: a velocidade de cada amostra vale do momento em que foi tirada até a próxima, e cada input update recebe o trecho disso que ela cobre: as amostras que chegaram nela e, no `onAfterUpdate`, a última velocidade até o `InputState.currentTime`. A velocidade guardada vale no máximo 50 ms sem amostra nova. Vale para o cabo e para o Bluetooth. O relógio do Input System volta para trás ao entrar ou sair do Play sem domain reload, e a contagem só andava para a frente: o gyro parou até ela recomeçar quando a hora fica mais de 0,1 s para trás.
+Por quê: por Bluetooth chegam uns 70 relatórios por segundo, e com o jogo a mais fps que isso metade dos frames recebia giro zero e a outra metade um degrau dobrado, então a câmera andava em escada. Pelo cabo, com 500 por segundo, isso não aparecia. O total girado é o mesmo; muda só como ele se distribui pelos frames, sem atraso a mais.
+Origem: pedido do usuário (Bluetooth suave) e sugestão da IA aceita (segurar a velocidade); a melhora no Bluetooth ainda a validar (R-011)
+Não escolhido: interpolar entre amostras — suaviza mais, mas atrasa a câmera em um intervalo inteiro (~14 ms no Bluetooth).
+Afeta: R-011, `Switch2ProController.CreditHeldTurn`
+
+### D-013 Sem Bluetooth em batch mode, o que inclui os processos de importação do Editor
+Decisão: `Switch2Bluetooth.Start` só roda fora de batch mode.
+Por quê: `InitializeOnLoad` também roda nos `AssetImportWorker`, que são Unity em batch mode, e cada um procurava e conectava o controle por conta própria. O registro em arquivo mostrou dois processos conectados ao mesmo controle. A desconexão do Editor não derrubava o link enquanto um processo desses ainda o segurasse.
+Origem: sugestão da IA aceita
+Não escolhido: testar só `AssetDatabase.IsAssetImportWorkerProcess()` - um batch mode de CI também não precisa de controle.
+Afeta: `JoySenseSupport.Initialize`, F-013, R-013
 
 ## Fatos verificados
 
@@ -76,8 +91,8 @@ Verificado: 2026-11-01
 Afeta: D-009
 
 ### F-013 Uma conexão Bluetooth pode ficar viva e muda
-Fato: numa reconexão por botão, o controle mandou no máximo poucos relatórios e parou. A conexão seguia aberta e os 12 comandos de setup, reenviados, terminaram em 388 ms sem nenhuma falha, mas nenhum relatório chegou depois disso, nem à DLL. A calibração também não foi lida nessa conexão. A causa é desconhecida, e o caso ainda não foi reproduzido.
-Fonte: teste do usuário e inspeção no Editor (`s_PendingReports` parado em 0 por 1,5 s com a thread principal presa)
+Fato: numa reconexão por botão, o controle mandou no máximo poucos relatórios e parou. A conexão seguia aberta e os 12 comandos de setup, reenviados, terminaram em 388 ms sem nenhuma falha, mas nenhum relatório chegou depois disso, nem à DLL. A calibração também não foi lida nessa conexão. Aconteceu de novo ao tirar o cabo e acordar o controle por botão, também com a calibração falhando. Ali a recuperação rodou: setup de novo, ainda mudo, link derrubado. Mas, com a DLL sem nenhuma conexão, o Windows seguiu com o controle conectado (`IsConnected` do nó `BTHLE\DEV_`), e o controle sem anunciar não reconectava por botão; desligar e ligar o Bluetooth do Windows o soltou. Quem segurava o link não se sabe. Repetida a mesma sequência logo depois, conectou e funcionou. A causa do silêncio é desconhecida. Medido com o caso na mão, de outro processo, sem Steam e sem nenhuma conexão na DLL do Unity: os 12 comandos de setup respondem em cerca de 30 ms e a leitura de memória devolve dados, mas nenhuma das 6 características com notificação manda nada, nem a `...fd2` de entrada, com a CCCD dela lendo `01-00`. Não religaram o fluxo: repetir o setup, alternar o modo de relatório (0x05, 0x0a, 0x09), reenviar a seleção de features nem pedir intervalos de 15, 60 e 180 ms. Escrever `00-00` na CCCD da `...fd2` responde sucesso e ela segue em `01-00`, mas o mesmo acontece numa conexão sadia com a DLL assinando, então isso não é o defeito. Fechar o Unity com o caso na mão soltou o link em poucos segundos, depois de uns 15 minutos preso, então quem segura é o processo do Unity. Fora do Unity, numa conexão sadia, `JsBle_Disconnect` solta o link em uns 10 s com o processo vivo, e uma conexão recém-aberta transmite uns 200 a 280 relatórios por segundo assim que assina a `...fd2`, sem nenhum comando de setup. O que o Unity retém além do fechamento da DLL não se sabe. Desta vez o caso veio pouco mais de um minuto depois de uma recompilação, com o controle desconectado nela; a relação não está provada. Um cliente preso com `MaintainConnection` ficou como hipótese: o teste não valeu, porque o controle não conectou durante ele. O usuário relata travamentos parecidos em outros softwares e com outros controles, inclusive num jogo do Steam, e suspeita do hardware; isso não foi medido. A investigação parou aqui por ser difícil de reproduzir. Depois, `bluetooth.log` mostrou o Editor e um `AssetImportWorker` conectados juntos ao controle (D-013), o que explica quem segurava o link: sem os processos auxiliares, `JsBle_Disconnect` no Editor soltou o link em até 5 s. Dois processos mandando setup e lendo memória ao mesmo tempo podem explicar também a calibração que falha e o silêncio, mas isso não foi provado. Os travamentos em outros softwares não têm relação com o pacote.
+Fonte: teste do usuário e inspeção no Editor (`s_PendingReports` parado em 0 por 1,5 s com a thread principal presa; `JsBle_GetConnections` em 0 e `Get-PnpDeviceProperty` com o controle conectado)
 Verificado: 2026-11-01
 Afeta: `Switch2Bluetooth.ReadLoop`
 

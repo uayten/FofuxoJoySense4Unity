@@ -1,18 +1,16 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-012 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-014 -->
 
 ## Em teste
 
-### R-011 [feature] Dead zone por função e gyro nas Input Actions
-Ajusta: Runtime/JoySenseSupport.cs, Runtime/Controls/JoySenseProcessors.cs, Runtime/Controls/MotionLookControl.cs, Runtime/Motion/IMotionController.cs, Runtime/Switch2/Switch2ProController.cs; ao aprovar, README.pt-BR.md > Movimento
-Esperado: cada binding de stick tem a própria dead zone, sem o filtro global antes dela, e o gyro pode ser ligado a uma action como `<Switch2ProController>/gyroLook`, com dead zone e escala por processors (D-010).
-Testes (Steam fechado, no MyDragonShop; o controle e os processors já foram conferidos com relatórios sintéticos, a action em Play e o hardware não):
-- [ ] Em Play, girar o controle move a câmera pela action `Jogador/OlharGiroscopio`, pelo cabo e por Bluetooth
-- [ ] Virar o controle 90° gira a câmera uns 90° com intensidade em 100%
-- [ ] Com o controle parado, a câmera não anda; depois de uma parada, não sobra movimento
-- [ ] Mudar `min` do processor em `Jogador/Mover` e em `Jogador/Olhar` muda cada um sem afetar o outro
-- [ ] A navegação dos menus com os sticks continua igual, sem andar sozinha
+### R-012 [ajuste] Luz de player 1 também pelo cabo
+Ajusta: Runtime/Switch2/Switch2CommandInterface.cs
+Esperado: a luz de player 1 acende pelo cabo como pelo Bluetooth, igual ao console, venha o controle desligado ou do Bluetooth.
+Testes (Steam fechado):
+- [x] Plugar o cabo com o controle desligado acende a luz de player 1
+- [ ] Plugar o cabo com o controle no Bluetooth mantém a luz de player 1, e os botões e o gyro continuam certos
+- [ ] Tirar o cabo e reconectar por botão no Bluetooth mantém a luz de player 1
 
 ### R-010 [ajuste] Bluetooth só para controles em pareamento ou deste PC; nomes dos cliques dos sticks
 Ajusta: Runtime/Switch2/Switch2Bluetooth.cs, Native~/JoySenseBle (JsBle_SuppressFor), Runtime/Switch2/Switch2ProController.cs; ao aprovar, README.pt-BR.md > Conectar por Bluetooth (um controle pareado com outro aparelho é ignorado até segurarem SYNC nele)
@@ -38,6 +36,10 @@ Esperado: um DualShock 4 funciona por este pacote, como no JoyShockLibrary4Unrea
 ### R-008 [feature] Calibração própria de cada Switch 2 Pro Controller com vários conectados
 Esperado: com dois ou mais Switch 2 Pro Controllers plugados, os sticks de cada um usam a calibração dele em vez da faixa fixa.
 Notas: o Unity não informa o caminho do dispositivo e dá o mesmo serial para todas as unidades (F-003), então o dispositivo do Input System precisa ser casado com a interface WinUSB dele de outro jeito. Por exemplo: ler um relatório de cada caminho HID e ver qual dispositivo recebeu os mesmos bytes.
+
+### R-013 [pesquisa] Conexão Bluetooth que fica muda
+Esperado: saber por que o controle às vezes conecta e não manda entrada, comparando as linhas `silent` e `streaming` do `bluetooth.log` quando o erro voltar. Conta como resposta uma causa reproduzível ou a confirmação de que vem do driver ou do hardware.
+Em aberto: se o erro não voltar depois do D-013, o item pode sair.
 
 ### R-009 [ajuste] Atualizar README.md (inglês)
 Ajusta: README.md

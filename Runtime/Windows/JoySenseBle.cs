@@ -24,6 +24,16 @@ namespace Fofuxo.JoySense.Windows
             public uint reserved;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LinkInfo
+        {
+            public int connectionInterval;
+            public int connectionLatency;
+            public int linkTimeout;
+            public int transmitPhy;
+            public int receivePhy;
+        }
+
         [DllImport(Dll)] public static extern int JsBle_IsSupported();
         [DllImport(Dll)] public static extern ulong JsBle_GetHostAddress();
         [DllImport(Dll)] public static extern int JsBle_StartScan();
@@ -35,6 +45,8 @@ namespace Fofuxo.JoySense.Windows
         [DllImport(Dll)] public static extern int JsBle_IsConnected(int handle);
         [DllImport(Dll)] public static extern int JsBle_GetConnections([Out] int[] handles, int maxCount);
         [DllImport(Dll)] public static extern int JsBle_GetConnectionInfo(int handle, out ulong address, out ushort productId);
+        [DllImport(Dll)] public static extern int JsBle_GetLinkInfo(int handle, out LinkInfo info);
+        [DllImport(Dll)] public static extern int JsBle_GetWindowsConnectionStatus(ulong address);
 
         [DllImport(Dll)]
         public static extern int JsBle_SendCommand(int handle, byte commandId, byte subcommandId, byte[] data, int dataLength,

@@ -64,6 +64,10 @@ namespace Fofuxo.JoySense.Switch2
             public ulong address;
             public string serial;
             public Thread reader;
+            // What the connection looked like as it came up, for the log. -1 for one a previous domain connected.
+            public long connectMs;
+            public bool pairingMode;
+            public bool calibrationValid;
             // Main thread only.
             public Switch2ProController device;
         }
@@ -125,6 +129,8 @@ namespace Fofuxo.JoySense.Switch2
         static bool s_Started;
         static bool s_NativeMissing;
         static Thread s_Scanner;
+        // Since this domain started: in the Editor, since the last recompile.
+        static readonly System.Diagnostics.Stopwatch s_DomainClock = new System.Diagnostics.Stopwatch();
 
         public static void Start()
         {
@@ -133,6 +139,8 @@ namespace Fofuxo.JoySense.Switch2
                 return;
             }
             s_Started = true;
+            s_DomainClock.Restart();
+            Switch2BluetoothLog.Initialize();
 
             InputSystem.onBeforeUpdate += Pump;
 #if UNITY_EDITOR
@@ -145,6 +153,45 @@ namespace Fofuxo.JoySense.Switch2
 
             s_Scanner = new Thread(ScanLoop) { IsBackground = true, Name = "JoySense Bluetooth" };
             s_Scanner.Start();
+        }
+
+        // Stops scanning and lets go of every controller, so another program can connect to them. Start picks them
+        // up again. Main thread.
+        public static void Stop()
+        {
+            if (!s_Started)
+            {
+                return;
+            }
+            s_Started = false;
+
+            InputSystem.onBeforeUpdate -= Pump;
+#if UNITY_EDITOR
+            UnityEditor.AssemblyReloadEvents.beforeAssemblyReload -= StopThreads;
+            UnityEditor.EditorApplication.quitting -= Shutdown;
+#else
+            Application.quitting -= Shutdown;
+#endif
+
+            Shutdown();
+
+            // The links' devices go with them; work and reports still queued belong to links that no longer exist.
+            lock (s_Links)
+            {
+                s_Links.Clear();
+            }
+            while (s_MainThreadWork.TryDequeue(out _))
+            {
+            }
+            while (s_Reports.TryDequeue(out _))
+            {
+            }
+            s_PendingReports = 0;
+            RemoveOrphanedDevices();
+
+            s_Scanner = null;
+            s_Stopping = false;
+            s_StopSignal.Reset();
         }
 
         // Before a domain reload: the threads go, the connections stay for the next domain to pick up.
@@ -232,7 +279,7 @@ namespace Fofuxo.JoySense.Switch2
                 {
                     continue;
                 }
-                StartLink(handles[index], address, ReadCalibration(handles[index]));
+                StartLink(handles[index], address, ReadCalibration(handles[index]), -1, false);
             }
 
             // Queued after the links, so it runs once they have claimed their devices: anything left over belongs to
@@ -264,7 +311,9 @@ namespace Fofuxo.JoySense.Switch2
                 return;
             }
 
+            var connectClock = System.Diagnostics.Stopwatch.StartNew();
             var handle = JoySenseBle.JsBle_Connect(advertisement.address, advertisement.productId);
+            var connectMs = connectClock.ElapsedMilliseconds;
             if (handle == 0)
             {
                 return;
@@ -288,12 +337,20 @@ namespace Fofuxo.JoySense.Switch2
                 return;
             }
 
-            StartLink(handle, advertisement.address, ReadCalibration(handle));
+            StartLink(handle, advertisement.address, ReadCalibration(handle), connectMs, pairingMode);
         }
 
-        static void StartLink(int handle, ulong address, Calibration calibration)
+        static void StartLink(int handle, ulong address, Calibration calibration, long connectMs, bool pairingMode)
         {
-            var link = new Link { handle = handle, address = address, serial = address.ToString("X12") };
+            var link = new Link
+            {
+                handle = handle,
+                address = address,
+                serial = address.ToString("X12"),
+                connectMs = connectMs,
+                pairingMode = pairingMode,
+                calibrationValid = calibration.valid,
+            };
             lock (s_Links)
             {
                 s_Links.Add(link);
@@ -313,6 +370,7 @@ namespace Fofuxo.JoySense.Switch2
             var settleTimer = System.Diagnostics.Stopwatch.StartNew();
             var silenceTimer = System.Diagnostics.Stopwatch.StartNew();
             var setupRepeated = false;
+            var reports = 0L;
             try
             {
                 while (!s_Stopping)
@@ -340,15 +398,27 @@ namespace Fofuxo.JoySense.Switch2
                             else
                             {
                                 Debug.LogWarning($"[JoySense] Switch 2 Pro Controller {link.serial} still sends no " +
-                                    "input; disconnecting it. Press a button on it to connect again.");
+                                    "input; disconnecting it. Press a button on it to connect again; if that does not " +
+                                    "work, turn Windows Bluetooth off and on.");
+                                LogSilentLink(link, reports, settleTimer.ElapsedMilliseconds);
                                 s_MainThreadWork.Enqueue(() => Drop(link));
+                                WatchRelease(link);
                                 return;
                             }
                         }
                         continue;
                     }
                     silenceTimer.Restart();
+                    if (setupRepeated)
+                    {
+                        Switch2BluetoothLog.Write("recovered", $"{Describe(link)} reportsBefore={reports}");
+                    }
                     setupRepeated = false;
+                    if (reports++ == 0)
+                    {
+                        Switch2BluetoothLog.Write("streaming",
+                            $"{Describe(link)} firstReportMs={settleTimer.ElapsedMilliseconds} {DescribeRadio(link)}");
+                    }
 
                     report.bytes[0] = InputReportId;
                     if (!settled)
@@ -372,6 +442,76 @@ namespace Fofuxo.JoySense.Switch2
             {
                 Debug.LogException(exception);
             }
+        }
+
+        static string Describe(Link link)
+        {
+            return $"controller={link.serial} sinceDomainStartS={s_DomainClock.ElapsedMilliseconds / 1000} " +
+                $"connectMs={link.connectMs} pairing={link.pairingMode} calibrationAtConnect={link.calibrationValid}";
+        }
+
+        static string DescribeRadio(Link link)
+        {
+            if (JoySenseBle.JsBle_GetLinkInfo(link.handle, out var info) == 0)
+            {
+                return "radio=unknown";
+            }
+            return $"intervalMs={info.connectionInterval * 1.25f} latency={info.connectionLatency} " +
+                $"timeoutMs={info.linkTimeout * 10} phyTx={info.transmitPhy} phyRx={info.receivePhy}";
+        }
+
+        // Asks what is still alive on a silent link before it is dropped. Worker thread: each answer takes a while.
+        static void LogSilentLink(Link link, long reports, long connectedMs)
+        {
+            var commandClock = System.Diagnostics.Stopwatch.StartNew();
+            var commandAnswered = SendCommand(link.handle, 0x10, 0x01, Array.Empty<byte>());
+            var commandMs = commandClock.ElapsedMilliseconds;
+            var calibrationNow = ReadCalibrationOnce(link.handle);
+
+            bool steamRunning;
+            try
+            {
+                steamRunning = System.Diagnostics.Process.GetProcessesByName("steam").Length > 0;
+            }
+            catch (Exception)
+            {
+                steamRunning = false;
+            }
+
+            Switch2BluetoothLog.Write("silent",
+                $"{Describe(link)} reportsBefore={reports} connectedMs={connectedMs} {DescribeRadio(link)} " +
+                $"commandAnswered={commandAnswered} commandMs={commandMs} calibrationNow={calibrationNow.valid} " +
+                $"steam={steamRunning}");
+            Debug.LogWarning($"[JoySense] The silent link was recorded in {Switch2BluetoothLog.FilePath}.");
+        }
+
+        // Whether Windows lets go of the controller after the drop. A link that stays is what keeps a button press
+        // from reconnecting it. Its own thread, since it waits; a domain reload ends it, losing only this answer.
+        static void WatchRelease(Link link)
+        {
+            var address = link.address;
+            var serial = link.serial;
+            new Thread(() =>
+            {
+                try
+                {
+                    var waited = 0;
+                    foreach (var seconds in new[] { 10, 30 })
+                    {
+                        if (s_StopSignal.WaitOne((seconds - waited) * 1000))
+                        {
+                            return;
+                        }
+                        waited = seconds;
+                        var status = JoySenseBle.JsBle_GetWindowsConnectionStatus(address);
+                        Switch2BluetoothLog.Write("afterDrop", $"controller={serial} afterS={seconds} windowsConnected={status}");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
+            }) { IsBackground = true, Name = $"JoySense release watch {serial}" }.Start();
         }
 
         // The button word is bytes 5-8, little-endian. Its top six bits are not buttons: a Joy-Con reports status

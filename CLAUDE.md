@@ -46,6 +46,8 @@ de um jogo entra nele. Toda mudança visível ganha uma entrada em `[Unreleased]
   dispositivo lê sem calibração.
 - O código só de Windows fica atrás de `UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN`, para o pacote
   compilar em qualquer plataforma.
+- **O Bluetooth não inicia em batch mode (D-013):** o `InitializeOnLoad` também roda nos processos de
+  importação do Editor, e todo acesso a hardware precisa levar isso em conta.
 
 ## Portando do JoyShockLibrary4Unreal
 

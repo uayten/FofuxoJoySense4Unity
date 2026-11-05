@@ -47,20 +47,33 @@ bindings como `<Switch2ProController>/home` e assim por diante.
 Com vários Switch 2 Pro Controllers conectados, todos funcionam, mas os sticks usam uma faixa fixa em
 vez da calibração de cada controle.
 
+Para cada binding de stick ter a própria dead zone, use o processor Stick Deadzone do próprio Input
+System com os dois valores, como `StickDeadzone(min=0.15,max=0.925)`: um valor omitido cai na dead
+zone global. Essa global vale para todos os gamepads e é aplicada antes do binding, então zere-a em
+Project Settings > Input System Package (Default Deadzone Min 0, Max 1) ou chame
+`JoySenseSupport.RemoveGlobalStickDeadzone()` ao abrir o jogo. Pelas configurações, e com
+bindings `<Gamepad>` para o que vale em qualquer controle, o jogo continua funcionando se o pacote
+for removido: só os bindings que citam controles do pacote ficam sem efeito.
+
 ## Movimento
 
 O drift do giroscópio é calibrado sozinho enquanto o controle fica parado ou se move sem solavancos.
 Tudo vem nos eixos do Unity: com o controle deitado e a face para cima, x para a direita, y para cima
 e z para longe do jogador.
 
+Para mirar ou girar a câmera, ligue uma action do tipo Value a `*/{GyroLook}`, que vale para qualquer
+controle com movimento. Ela traz os graus que o controle girou no frame, como o delta de um mouse
+(x para a direita, y para cima): leia a cada frame com `ReadValue<Vector2>()` e some à câmera,
+multiplicando pela sensibilidade. O giro se distribui pelo tempo, então a câmera anda lisa também
+por Bluetooth, e o que não for lido num frame (num menu, por exemplo) é descartado.
+
 | Membro do `Switch2ProController` | O que é |
 |---|---|
 | `gyro` | Velocidade angular em graus por segundo; aceita binding, como `<Switch2ProController>/gyro` |
 | `accelerometer` | Aceleração em g; aceita binding |
 | `orientation` | A orientação do controle, que pode ir direto para um `Transform`; o yaw é relativo e deriva devagar |
-| `ConsumeRotation()` | Quanto o controle girou desde a última chamada, em graus; é o que usar para mirar |
-| `gyroSpace` | O espaço de `ConsumeRotation()`: `Controller`, `World` ou `Player` |
-| `gyroDeadZone` | Giros mais lentos que este valor, em graus por segundo, não contam em `ConsumeRotation()` |
+| `gyroLook` | Os graus girados no frame, para mirar; é o controle por trás de `*/{GyroLook}` |
+| `gyroSpace` | O espaço de `gyroLook`: `Controller`, `World` ou `Player` (o padrão, que funciona em qualquer pegada) |
 | `gravity` e `linearAcceleration` | A gravidade e a aceleração sem ela, em g |
 
 ## Conectar por Bluetooth

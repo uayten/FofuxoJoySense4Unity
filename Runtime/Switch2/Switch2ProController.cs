@@ -98,7 +98,7 @@ namespace Fofuxo.JoySense.Switch2
         [FieldOffset(51)] public short accelerometerWord1;
         [FieldOffset(53)] public short accelerometerWord2;
 
-        [InputControl(name = "gyroLook", layout = "MotionLookControl", displayName = "Gyro Look", format = "BIT", sizeInBits = 48, noisy = true)]
+        [InputControl(name = "gyroLook", layout = "MotionLookControl", displayName = "Gyro Look", usage = MotionLookControl.GyroLookUsage, format = "BIT", sizeInBits = 48, noisy = true)]
         [InputControl(name = "gyro", layout = "Vector3", displayName = "Gyro", format = "BIT", sizeInBits = 48, noisy = true)]
         [InputControl(name = "gyro/x", layout = "MotionSensorAxis", format = "SHRT", offset = 0, sizeInBits = 16, noisy = true)]
         [InputControl(name = "gyro/y", layout = "MotionSensorAxis", format = "SHRT", offset = 4, sizeInBits = 16, noisy = true)]
@@ -159,12 +159,13 @@ namespace Fofuxo.JoySense.Switch2
         // and multiplying the next sample by the whole gap would invent one.
         const float MaxMotionInterval = 0.1f;
 
+        // How long gyroLook keeps turning at the latest sample's speed while waiting for the next. Over Bluetooth samples
+        // come 6-20 ms apart (F-012); holding past that would keep the camera turning after the link goes quiet.
+        const double TurnHoldSeconds = 0.05;
+
         // On from the moment the controller exists, as in JoyShockLibrary4Unreal: a game that never thinks about
         // calibration behaves correctly, and one that wants to own it can switch to manual.
         const MotionCalibrationMode AutomaticCalibration = MotionCalibrationMode.SensorFusion | MotionCalibrationMode.Stillness;
-
-        // A longer gap between calls to ConsumeRotation means nobody was reading: a menu, or a screen without a camera.
-        const double ConsumeStaleSeconds = 0.25;
 
         public ButtonControl homeButton { get; protected set; }
         public ButtonControl captureButton { get; protected set; }
@@ -184,7 +185,7 @@ namespace Fofuxo.JoySense.Switch2
         /// <summary>Angular velocity of the latest sample, in degrees per second, without its drift.</summary>
         /// <remarks>
         /// The controller sends far more samples than a game has frames. To turn something by the controller's motion,
-        /// use <see cref="gyroLook"/> or <see cref="ConsumeRotation"/>, which count all of them.
+        /// use <see cref="gyroLook"/>, which counts all of them.
         /// </remarks>
         public Vector3Control gyro { get; protected set; }
 
@@ -209,18 +210,8 @@ namespace Fofuxo.JoySense.Switch2
         /// <summary>The acceleration from moving the controller, in g, with gravity taken out.</summary>
         public Vector3 linearAcceleration => ToUnityVector(m_Motion.processedAcceleration);
 
-        /// <summary>
-        /// The space <see cref="gyroLook"/> and <see cref="ConsumeRotation"/> report in. Player by default, which works
-        /// however the controller is held.
-        /// </summary>
+        /// <summary>The space <see cref="gyroLook"/> reports in. Player by default, which works however the controller is held.</summary>
         public GyroSpace gyroSpace { get; set; } = GyroSpace.Player;
-
-        /// <summary>
-        /// Turning slower than this, in degrees per second, counts as no turn in <see cref="ConsumeRotation"/>. Faster
-        /// turning loses this much speed, so the camera does not jump at the threshold. A binding to
-        /// <see cref="gyroLook"/> sets its own with <see cref="JoySenseGyroDeadzoneProcessor"/> instead.
-        /// </summary>
-        public float gyroDeadZone { get; set; }
 
         /// <summary>Automatic works out the drift by itself. Manual leaves it to <see cref="StartGyroCalibration"/>.</summary>
         public GyroCalibrationMode gyroCalibrationMode
@@ -266,8 +257,9 @@ namespace Fofuxo.JoySense.Switch2
         MotionSensorAxis m_GyroZ;
         bool m_CueMotionReset;
         double m_LastMotionTime = double.NegativeInfinity;
-        Vector3 m_AccumulatedRotation;
-        double m_LastConsumeTime = double.NegativeInfinity;
+        Vector2 m_HeldTurnRate;
+        double m_HeldTurnSince = double.NegativeInfinity;
+        double m_TurnCreditedUntil = double.NegativeInfinity;
 
         bool m_ReceivedValidReport;
         double m_LastSetupRequestTime = double.NegativeInfinity;
@@ -298,24 +290,6 @@ namespace Fofuxo.JoySense.Switch2
             ((MotionSensorAxis)accelerometer.z).sensorScale = AccelerometerScale;
 
             SetStickCalibration(s_FallbackCalibration, s_FallbackCalibration);
-        }
-
-        /// <summary>
-        /// Returns how far the controller has turned since the last call, in degrees and in <see cref="gyroSpace"/>, and
-        /// starts counting again.
-        /// </summary>
-        /// <remarks>
-        /// Meant to be called once a frame by whatever the gyro aims. A second caller only gets what was left since the
-        /// first. In world and player space, x is pitch and y is yaw, and z stays at zero. After a gap with no calls, what
-        /// the controller did meanwhile is dropped, so coming back from a menu does not jump the camera.
-        /// </remarks>
-        public Vector3 ConsumeRotation()
-        {
-            var now = Time.realtimeSinceStartupAsDouble;
-            var rotation = now - m_LastConsumeTime > ConsumeStaleSeconds ? Vector3.zero : m_AccumulatedRotation;
-            m_LastConsumeTime = now;
-            m_AccumulatedRotation = Vector3.zero;
-            return rotation;
         }
 
         /// <summary>Makes the current pose the origin of <see cref="orientation"/>, which gravity levels again.</summary>
@@ -351,6 +325,7 @@ namespace Fofuxo.JoySense.Switch2
         {
             base.OnAdded();
             InputSystem.onBeforeUpdate += ClearFrameTurn;
+            InputSystem.onAfterUpdate += CreditTurnUntilNow;
             if (!isBluetooth)
             {
                 Switch2Setup.Request(this);
@@ -360,14 +335,47 @@ namespace Fofuxo.JoySense.Switch2
         protected override void OnRemoved()
         {
             InputSystem.onBeforeUpdate -= ClearFrameTurn;
+            InputSystem.onAfterUpdate -= CreditTurnUntilNow;
             base.OnRemoved();
         }
 
-        // Events are processed right after this, so gyroLook holds exactly the samples of the current input update.
+        // Events are processed right after this, so gyroLook holds exactly the time of the current input update.
         void ClearFrameTurn()
         {
             gyroLook.frameTurn = Vector2.zero;
-            gyroLook.frameSeconds = 0f;
+        }
+
+        // Without this, an update that got no report would not turn at all and the next would turn twice: over Bluetooth
+        // that is every other frame, and the camera moves in steps.
+        void CreditTurnUntilNow()
+        {
+            CreditHeldTurn(InputState.currentTime);
+        }
+
+        // gyroLook turns by time rather than by report: each sample's speed holds from the moment it was taken until the
+        // next one, and every update gets the stretch of that it covers.
+        void CreditHeldTurn(double until)
+        {
+            // The Input System's clock can go back, as when Play mode starts or stops without a domain reload. A sample
+            // or an update a little behind is normal; this far behind, the clock started over, and so does the count.
+            if (double.IsNegativeInfinity(m_TurnCreditedUntil) || until < m_TurnCreditedUntil - MaxMotionInterval)
+            {
+                m_TurnCreditedUntil = until;
+                m_HeldTurnRate = Vector2.zero;
+                return;
+            }
+            if (until <= m_TurnCreditedUntil)
+            {
+                return;
+            }
+
+            var from = System.Math.Max(m_TurnCreditedUntil, until - MaxMotionInterval);
+            var heldUntil = System.Math.Min(until, m_HeldTurnSince + TurnHoldSeconds);
+            if (heldUntil > from)
+            {
+                gyroLook.frameTurn += m_HeldTurnRate * (float)(heldUntil - from);
+            }
+            m_TurnCreditedUntil = until;
         }
 
         /// <summary>
@@ -484,18 +492,10 @@ namespace Fofuxo.JoySense.Switch2
             hasMotion |= accelerometerSample != Vector3.zero || gyroSample != Vector3.zero;
             motionSampleCount++;
 
-            var spaceSample = ToGyroSpace(m_Motion.calibratedGyro);
-            m_AccumulatedRotation += ToUnityAngular(ApplyDeadZone(spaceSample)) * deltaTime;
-
-            var turn = ToUnityAngular(spaceSample) * deltaTime;
-            gyroLook.frameTurn += new Vector2(turn.y, -turn.x);
-            gyroLook.frameSeconds += deltaTime;
-        }
-
-        Vector3 ApplyDeadZone(Vector3 rate)
-        {
-            var speed = rate.magnitude;
-            return speed > gyroDeadZone ? rate * ((speed - gyroDeadZone) / speed) : Vector3.zero;
+            CreditHeldTurn(time);
+            var rate = ToUnityAngular(ToGyroSpace(m_Motion.calibratedGyro));
+            m_HeldTurnRate = new Vector2(rate.y, -rate.x);
+            m_HeldTurnSince = time;
         }
 
         Vector3 ToGyroSpace(Vector3 sample)

@@ -63,6 +63,19 @@ struct JsBleAdvertisement
     uint32_t reserved;
 };
 
+// The radio state of one connection, for diagnostics. Mirrored by a C# struct; keep the layout in step.
+struct JsBleLinkInfo
+{
+    // In units of 1.25ms.
+    int32_t connectionInterval;
+    int32_t connectionLatency;
+    // In units of 10ms.
+    int32_t linkTimeout;
+    // 0 unknown, 1 uncoded 1M, 2 uncoded 2M, 3 coded.
+    int32_t transmitPhy;
+    int32_t receivePhy;
+};
+
 namespace
 {
     // Nintendo's company identifier, as it appears in the manufacturer data of a controller's advertisement.
@@ -899,6 +912,58 @@ JSBLE_API int32_t JsBle_GetConnectionInfo(int32_t handle, uint64_t* outAddress, 
     return 1;
 }
 
+static int32_t PhyCode(const BluetoothLEConnectionPhyInfo& info)
+{
+    return info.IsUncoded1MPhy() ? 1 : info.IsUncoded2MPhy() ? 2 : info.IsCodedPhy() ? 3 : 0;
+}
+
+// False on a Windows version without these queries, or once the connection has gone.
+static int32_t GetLinkInfoImpl(int32_t handle, JsBleLinkInfo* outInfo)
+{
+    ConnectionPtr pinned = Pin(handle);
+    if (!pinned || outInfo == nullptr || pinned->device == nullptr)
+    {
+        return 0;
+    }
+
+    try
+    {
+        const BluetoothLEConnectionParameters parameters = pinned->device.GetConnectionParameters();
+        const BluetoothLEConnectionPhy phy = pinned->device.GetConnectionPhy();
+        outInfo->connectionInterval = parameters.ConnectionInterval();
+        outInfo->connectionLatency = parameters.ConnectionLatency();
+        outInfo->linkTimeout = parameters.LinkTimeout();
+        outInfo->transmitPhy = PhyCode(phy.TransmitInfo());
+        outInfo->receivePhy = PhyCode(phy.ReceiveInfo());
+        return 1;
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+// Whether Windows holds a link to this address, whoever asked for it: 1 yes, 0 no, -1 could not tell. Only looks:
+// a device object without a session does not bring a link up. Blocks; call it from a worker thread.
+static int32_t GetWindowsConnectionStatusImpl(uint64_t address)
+{
+    try
+    {
+        BluetoothLEDevice device = Await(BluetoothLEDevice::FromBluetoothAddressAsync(address));
+        if (device == nullptr)
+        {
+            return -1;
+        }
+        const int32_t status = device.ConnectionStatus() == BluetoothConnectionStatus::Connected ? 1 : 0;
+        device.Close();
+        return status;
+    }
+    catch (...)
+    {
+        return -1;
+    }
+}
+
 // Sends one command and waits for the controller's acknowledgement, which is how a command reports whether it
 // was accepted. Commands are serialised: the response characteristic carries no request id, so two commands in
 // flight could not be told apart.
@@ -1148,6 +1213,16 @@ JSBLE_API int32_t JsBle_StartScan()
 JSBLE_API int32_t JsBle_Connect(uint64_t address, uint16_t productId)
 {
     return RunOnMta([&] { return ConnectImpl(address, productId); });
+}
+
+JSBLE_API int32_t JsBle_GetLinkInfo(int32_t handle, JsBleLinkInfo* outInfo)
+{
+    return RunOnMta([&] { return GetLinkInfoImpl(handle, outInfo); });
+}
+
+JSBLE_API int32_t JsBle_GetWindowsConnectionStatus(uint64_t address)
+{
+    return RunOnMta([&] { return GetWindowsConnectionStatusImpl(address); });
 }
 
 JSBLE_API int32_t JsBle_SendRawCommand(int32_t handle, const uint8_t* data, int32_t length)

@@ -36,6 +36,10 @@ namespace Fofuxo.JoySense.Switch2
         static void Request(Switch2ProController device, bool calibrationRetry)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            if (!JoySenseSupport.controllersEnabled)
+            {
+                return;
+            }
             if (!s_Draining)
             {
                 s_Draining = true;

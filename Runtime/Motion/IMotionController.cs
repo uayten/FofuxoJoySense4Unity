@@ -16,17 +16,17 @@ namespace Fofuxo.JoySense.Motion
         /// <summary>The latest accelerometer sample, in g.</summary>
         Vector3Control accelerometer { get; }
 
-        /// <summary>How far the controller turned this input update, for binding to an action that turns a camera.</summary>
+        /// <summary>
+        /// How far the controller turned this input update, for binding to an action that turns a camera. Its layout
+        /// gives it the usage <see cref="MotionLookControl.GyroLookUsage"/>.
+        /// </summary>
         MotionLookControl gyroLook { get; }
 
-        /// <summary>The space <see cref="gyroLook"/> and <see cref="ConsumeRotation"/> report in.</summary>
+        /// <summary>The space <see cref="gyroLook"/> reports in.</summary>
         GyroSpace gyroSpace { get; set; }
 
         Quaternion orientation { get; }
         Vector3 gravity { get; }
-
-        /// <summary>Returns how far the controller has turned since the last call, in degrees.</summary>
-        Vector3 ConsumeRotation();
 
         /// <summary>Makes the current pose the origin of <see cref="orientation"/>.</summary>
         void ResetOrientation();

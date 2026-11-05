@@ -57,6 +57,14 @@ namespace Fofuxo.JoySense.Switch2
             new byte[] { 0x03, 0x0d, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
         };
 
+        // Player light 1, as the console lights it on a cable too. The controller keeps the lights it was given: without
+        // this, one moved from Bluetooth to its cable stays lit and one plugged in from off never is.
+        static readonly byte[] s_PlayerLightCommand = { 0x09, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+        // The first command after the init sequence goes unanswered and does nothing; the next is taken (measured on a
+        // Pro Controller 2). So the light is sent until the controller acknowledges it.
+        const int PlayerLightAttempts = 3;
+
         /// <summary>
         /// Initialises every Switch 2 controller present on USB and reads its stick calibration.
         /// </summary>
@@ -157,10 +165,20 @@ namespace Fofuxo.JoySense.Switch2
                 var failedCommands = 0;
                 foreach (var command in s_InitCommands)
                 {
-                    if (!SendCommand(pipes, command))
+                    if (!SendCommand(pipes, command, out _))
                     {
                         failedCommands++;
                     }
+                }
+
+                var lightAcknowledged = false;
+                for (var attempt = 0; attempt < PlayerLightAttempts && !lightAcknowledged; attempt++)
+                {
+                    SendCommand(pipes, s_PlayerLightCommand, out lightAcknowledged);
+                }
+                if (!lightAcknowledged)
+                {
+                    failedCommands++;
                 }
 
                 result.outcome = failedCommands == 0 ? Outcome.Initialized : Outcome.Failed;
@@ -215,8 +233,9 @@ namespace Fofuxo.JoySense.Switch2
             return pipes;
         }
 
-        static bool SendCommand(Pipes pipes, byte[] command)
+        static bool SendCommand(Pipes pipes, byte[] command, out bool acknowledged)
         {
+            acknowledged = false;
             var dataLength = command.Length - 2;
             var buffer = new byte[8 + dataLength];
             buffer[0] = command[0];
@@ -232,7 +251,8 @@ namespace Fofuxo.JoySense.Switch2
 
             // Drains the acknowledgement. Best effort: a missing ack is not taken as failure, as in JSL4U.
             var response = new byte[64];
-            Win32.WinUsb_ReadPipe(pipes.usb, pipes.input, response, (uint)response.Length, out _, IntPtr.Zero);
+            acknowledged = Win32.WinUsb_ReadPipe(pipes.usb, pipes.input, response, (uint)response.Length, out var read, IntPtr.Zero)
+                && read >= 2 && response[0] == command[0];
             return true;
         }
 
